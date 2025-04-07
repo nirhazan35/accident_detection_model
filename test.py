@@ -120,7 +120,7 @@ class AccidentDetector:
 # Example usage:
 if __name__ == "__main__":
     detector = AccidentDetector("models/accident_lstm.pth", threshold=0.3)
-    video_path = "data/test/0IPAgFHyRVI.mp4"  # Replace with your test video path
+    video_path = "data/test/3779620-hd_1920_1080_30fps.mp4"  # Replace with your test video path
     result = detector.predict(video_path)
     
     if result:

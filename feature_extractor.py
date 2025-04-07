@@ -4,6 +4,7 @@ import numpy as np
 from ultralytics import YOLO
 import cv2
 from pathlib import Path
+from tqdm import tqdm  # Added progress bar library
 
 # Configuration
 SEQ_LENGTH = 16          # Number of frames per sequence
@@ -16,15 +17,21 @@ def extract_features(video_path, label):
     # Convert string path to Path object
     video_path = Path(video_path)
     
-    model = YOLO("yolov8m.pt")
-    cap = cv2.VideoCapture(str(video_path))  # Path object needs to be converted back to string for cv2
-    features, metadata = [], []
-    prev_positions = {}  # Track previous frame positions for speed calculation
+    model = YOLO("yolo11m.pt")
+    cap = cv2.VideoCapture(str(video_path))
     
-    # Check if the video opened successfully
+    # Get total frames for progress bar
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
     if not cap.isOpened():
         print(f"Failed to open video: {video_path}")
         return None
+    
+    features, metadata = [], []
+    prev_positions = {}  # Track previous frame positions for speed calculation
+    
+    # Initialize progress bar for frames
+    pbar = tqdm(total=total_frames, desc=f"Processing {video_path.name}", unit='frame')
     
     frame_count = 0
     while cap.isOpened():
@@ -36,7 +43,7 @@ def extract_features(video_path, label):
         results = model.track(frame, persist=True, classes=CLASSES, verbose=False)
         
         # Get object data
-        boxes = results[0].boxes.xywhn.cpu().numpy()  # Normalized (x_center, y_center, width, height)
+        boxes = results[0].boxes.xywhn.cpu().numpy()
         track_ids = results[0].boxes.id.cpu().numpy() if results[0].boxes.id is not None else []
         classes = results[0].boxes.cls.cpu().numpy()
         
@@ -58,10 +65,11 @@ def extract_features(video_path, label):
         
         features.append(frame_feature)
         frame_count += 1
+        pbar.update(1)  # Update frame progress
     
     cap.release()
+    pbar.close()  # Close frame progress bar
     
-    # Check if we got any features
     if not features:
         print(f"No frames extracted from: {video_path}")
         return None
@@ -76,12 +84,14 @@ def extract_features(video_path, label):
             "source_video": video_path.name
         })
     
-    # Save features
+    # Save features with progress bar
+    save_pbar = tqdm(total=len(sequences), desc=f"Saving sequences for {video_path.name}", unit='seq')
     os.makedirs(FEATURES_DIR, exist_ok=True)
     for idx, seq in enumerate(sequences):
         np.save(f"{FEATURES_DIR}/seq_{video_path.stem}_{idx}.npy", seq["features"])
+        save_pbar.update(1)
+    save_pbar.close()
     
-    # Update metadata
     metadata = {
         "video_name": video_path.name,
         "total_sequences": len(sequences),
@@ -92,39 +102,40 @@ def extract_features(video_path, label):
 if __name__ == "__main__":
     all_metadata = []
     
-    # Process accident videos (label=1)
-    for video_file in os.listdir("data/accidents"):
-        # Skip .DS_Store and other hidden files
-        if video_file.startswith('.'):
-            continue
-            
-        # Only process video files
+    # Get list of video files with proper filtering
+    def get_video_files(folder):
         video_extensions = ['.mp4', '.avi', '.mov', '.mkv']
-        if not any(video_file.lower().endswith(ext) for ext in video_extensions):
-            print(f"Skipping non-video file: {video_file}")
-            continue
-            
+        return [
+            f for f in os.listdir(folder)
+            if not f.startswith('.') and 
+            any(f.lower().endswith(ext) for ext in video_extensions)
+        ]
+    
+    # Get all video files
+    accident_videos = get_video_files("data/accidents")
+    non_accident_videos = get_video_files("data/non_accidents")
+    total_videos = len(accident_videos) + len(non_accident_videos)
+    
+    # Main progress bar for all videos
+    main_pbar = tqdm(total=total_videos, desc="Processing all videos", unit='video')
+    
+    # Process accident videos (label=1)
+    for video_file in accident_videos:
         video_path = os.path.join("data/accidents", video_file)
         metadata = extract_features(video_path, label=1)
         if metadata:
             all_metadata.append(metadata)
+        main_pbar.update(1)
     
     # Process non-accident videos (label=0)
-    for video_file in os.listdir("data/non_accidents"):
-        # Skip .DS_Store and other hidden files
-        if video_file.startswith('.'):
-            continue
-            
-        # Only process video files
-        video_extensions = ['.mp4', '.avi', '.mov', '.mkv']
-        if not any(video_file.lower().endswith(ext) for ext in video_extensions):
-            print(f"Skipping non-video file: {video_file}")
-            continue
-            
+    for video_file in non_accident_videos:
         video_path = os.path.join("data/non_accidents", video_file)
         metadata = extract_features(video_path, label=0)
         if metadata:
             all_metadata.append(metadata)
+        main_pbar.update(1)
+    
+    main_pbar.close()
     
     # Save metadata
     with open("features/metadata.json", "w") as f:
