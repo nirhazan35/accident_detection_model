@@ -8,12 +8,12 @@ from pathlib import Path
 class AccidentDetector:
     def __init__(self, model_path, threshold=0.5):
         self.model = SimpleLSTM()  # Same as in train.py
-        self.model = self.model.to('cuda')
+        self.model = self.model
         self.model.load_state_dict(torch.load(model_path))
         self.model.eval()
         self.threshold = threshold
         # Initialize YOLO model for feature extraction
-        self.yolo_model = YOLO("yolo11m.pt").to('cuda')
+        self.yolo_model = YOLO("yolo11m.pt")
         # Configuration from feature_extractor.py
         self.seq_length = 16
         self.classes = [0, 1, 2, 3, 5, 7]  # Person, bicycle, car, motorcycle, bus, truck
@@ -25,9 +25,6 @@ class AccidentDetector:
         features = []
         prev_positions = {}  # Track previous frame positions for speed calculation
         
-        # Check if CUDA is available
-        assert torch.cuda.is_available(), "CUDA-enabled GPU is required!"
-        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
         
         # Check if the video opened successfully
         if not cap.isOpened():
@@ -94,7 +91,7 @@ class AccidentDetector:
             processed_seq.append(processed_frame)
             
         # Convert to tensor with batch dimension
-        return torch.FloatTensor([processed_seq]).to('cuda')
+        return torch.FloatTensor([processed_seq])
     
     def predict(self, video_path):
         """Predict if a video contains an accident"""
@@ -112,8 +109,6 @@ class AccidentDetector:
             
         prediction = (output > self.threshold).float().item()
         probability = output.item()
-
-        torch.cuda.empty_cache()  # Clear GPU memory
         
         return {
             "prediction": int(prediction),  # 0 or 1
