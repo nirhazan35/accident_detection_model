@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+import torch
 from ultralytics import YOLO
 import cv2
 from pathlib import Path
@@ -13,11 +14,15 @@ CLASSES = [0, 1, 2, 3, 5, 7]  # Person, bicycle, car, motorcycle, bus, truck
 FEATURES_DIR = "features/train"
 DATA_DIR = "data"
 
+# Check if CUDA is available
+assert torch.cuda.is_available(), "CUDA-enabled GPU is required!"
+print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+
 def extract_features(video_path, label):
     # Convert string path to Path object
     video_path = Path(video_path)
     
-    model = YOLO("yolo11m.pt")
+    model = YOLO("yolo11m.pt").to('cuda')
     cap = cv2.VideoCapture(str(video_path))
     
     # Get total frames for progress bar
@@ -40,7 +45,7 @@ def extract_features(video_path, label):
             break
         
         # Track objects
-        results = model.track(frame, persist=True, classes=CLASSES, verbose=False)
+        results = model.track(frame, persist=True, classes=CLASSES, verbose=False, device='0')
         
         # Get object data
         boxes = results[0].boxes.xywhn.cpu().numpy()

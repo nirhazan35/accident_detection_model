@@ -15,6 +15,10 @@ NUM_LAYERS = 2
 BATCH_SIZE = 32
 EPOCHS = 20
 
+# Check if CUDA is available
+assert torch.cuda.is_available(), "CUDA-enabled GPU is required!"
+print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+
 class SimpleLSTM(nn.Module):
     def __init__(self):
         super().__init__()
@@ -116,14 +120,14 @@ if __name__ == "__main__":
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, shuffle=True)
     
     # Create DataLoaders
-    train_dataset = TensorDataset(X_train, y_train.unsqueeze(1))
+    train_dataset = TensorDataset(X_train.cuda(), y_train.unsqueeze(1).cuda())
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    val_dataset = TensorDataset(X_val, y_val.unsqueeze(1))
+    val_dataset = TensorDataset(X_val.cuda(), y_val.unsqueeze(1).cuda())
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     
     # Initialize model
-    model = SimpleLSTM()
+    model = SimpleLSTM().to('cuda')
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     
