@@ -3,6 +3,7 @@ import json
 import numpy as np
 from ultralytics import YOLO
 import cv2
+from pathlib import Path
 
 # Configuration
 SEQ_LENGTH = 16          # Number of frames per sequence
@@ -12,10 +13,18 @@ FEATURES_DIR = "features"
 DATA_DIR = "data"
 
 def extract_features(video_path, label):
+    # Convert string path to Path object
+    video_path = Path(video_path)
+    
     model = YOLO("yolov8m.pt")
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(str(video_path))  # Path object needs to be converted back to string for cv2
     features, metadata = [], []
     prev_positions = {}  # Track previous frame positions for speed calculation
+    
+    # Check if the video opened successfully
+    if not cap.isOpened():
+        print(f"Failed to open video: {video_path}")
+        return None
     
     frame_count = 0
     while cap.isOpened():
@@ -50,6 +59,13 @@ def extract_features(video_path, label):
         features.append(frame_feature)
         frame_count += 1
     
+    cap.release()
+    
+    # Check if we got any features
+    if not features:
+        print(f"No frames extracted from: {video_path}")
+        return None
+    
     # Split into overlapping sequences
     sequences = []
     for i in range(0, len(features) - SEQ_LENGTH + 1, OVERLAP):
@@ -57,7 +73,7 @@ def extract_features(video_path, label):
         sequences.append({
             "features": seq,
             "label": label,
-            "source_video": os.path.basename(video_path)
+            "source_video": video_path.name
         })
     
     # Save features
@@ -67,7 +83,7 @@ def extract_features(video_path, label):
     
     # Update metadata
     metadata = {
-        "video_name": os.path.basename(video_path),
+        "video_name": video_path.name,
         "total_sequences": len(sequences),
         "label": label
     }
@@ -78,15 +94,37 @@ if __name__ == "__main__":
     
     # Process accident videos (label=1)
     for video_file in os.listdir("data/accidents"):
+        # Skip .DS_Store and other hidden files
+        if video_file.startswith('.'):
+            continue
+            
+        # Only process video files
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv']
+        if not any(video_file.lower().endswith(ext) for ext in video_extensions):
+            print(f"Skipping non-video file: {video_file}")
+            continue
+            
         video_path = os.path.join("data/accidents", video_file)
         metadata = extract_features(video_path, label=1)
-        all_metadata.append(metadata)
+        if metadata:
+            all_metadata.append(metadata)
     
     # Process non-accident videos (label=0)
     for video_file in os.listdir("data/non_accidents"):
+        # Skip .DS_Store and other hidden files
+        if video_file.startswith('.'):
+            continue
+            
+        # Only process video files
+        video_extensions = ['.mp4', '.avi', '.mov', '.mkv']
+        if not any(video_file.lower().endswith(ext) for ext in video_extensions):
+            print(f"Skipping non-video file: {video_file}")
+            continue
+            
         video_path = os.path.join("data/non_accidents", video_file)
         metadata = extract_features(video_path, label=0)
-        all_metadata.append(metadata)
+        if metadata:
+            all_metadata.append(metadata)
     
     # Save metadata
     with open("features/metadata.json", "w") as f:

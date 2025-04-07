@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+from train import SimpleLSTM
 
 class AccidentDetector:
     def __init__(self, model_path, threshold=0.5):
@@ -17,5 +18,5 @@ class AccidentDetector:
         self.threshold = new_threshold
 
 # Example usage:
-# detector = AccidentDetector("models/accident_lstm.pth", threshold=0.3)
-# prediction = detector.predict(test_sequence)
+detector = AccidentDetector("models/accident_lstm.pth", threshold=0.3)
+prediction = detector.predict("data/accidents/1.mp4")
