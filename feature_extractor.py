@@ -4,13 +4,13 @@ import numpy as np
 from ultralytics import YOLO
 import cv2
 from pathlib import Path
-from tqdm import tqdm  # Added progress bar library
+from tqdm import tqdm
 
 # Configuration
 SEQ_LENGTH = 16          # Number of frames per sequence
 OVERLAP = 8              # Overlap between sequences
 CLASSES = [0, 1, 2, 3, 5, 7]  # Person, bicycle, car, motorcycle, bus, truck
-FEATURES_DIR = "features"
+FEATURES_DIR = "features/train"
 DATA_DIR = "data"
 
 def extract_features(video_path, label):

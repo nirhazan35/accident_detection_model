@@ -6,6 +6,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 import os
 from pathlib import Path
+import datetime
 
 # Configuration
 INPUT_SIZE = 2 + 2  # num_vehicles + num_peds + (avg motion x, y)
@@ -40,7 +41,7 @@ def load_features():
         raise ValueError("Metadata is empty. Make sure feature_extractor.py ran successfully.")
     
     # Scan features directory for all available feature files
-    feature_files = os.listdir("features")
+    feature_files = os.listdir("features/train")
     feature_files = [f for f in feature_files if f.startswith("seq_") and f.endswith(".npy")]
     
     print(f"Found {len(feature_files)} feature files.")
@@ -78,7 +79,7 @@ def load_features():
             
         # Load the feature file
         try:
-            seq = np.load(f"features/{feature_file}", allow_pickle=True)
+            seq = np.load(f"features/train/{feature_file}", allow_pickle=True)
             
             # Convert to tensor format: [SEQ_LENGTH, INPUT_SIZE]
             processed_seq = []
@@ -159,5 +160,7 @@ if __name__ == "__main__":
         print(f"Epoch {epoch+1}/{EPOCHS}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.2f}%")
     
     # Save model
-    torch.save(model.state_dict(), "models/accident_lstm.pth")
-    print("Training complete. Model saved to models/accident_lstm.pth")
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    model_path = f"models/accident_lstm_{timestamp}.pth"
+    torch.save(model.state_dict(), model_path)
+    print(f"Training complete. Model saved to {model_path}")
