@@ -4,28 +4,14 @@ import numpy as np
 import json
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
+from LSTM import LSTM
 import os
 from pathlib import Path
 import datetime
 
 # Configuration
-INPUT_SIZE = 2 + 2  # num_vehicles + num_peds + (avg motion x, y)
-HIDDEN_SIZE = 64
-NUM_LAYERS = 2
 BATCH_SIZE = 32
 EPOCHS = 20
-
-
-class SimpleLSTM(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.lstm = nn.LSTM(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, batch_first=True)
-        self.fc = nn.Linear(HIDDEN_SIZE, 1)
-    
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        out = self.fc(out[:, -1, :])  # Use last timestep output
-        return torch.sigmoid(out)
 
 def load_features():
     # Check if metadata file exists
@@ -124,7 +110,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     
     # Initialize model
-    model = SimpleLSTM()
+    model = LSTM()
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     
