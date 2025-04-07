@@ -19,7 +19,7 @@ EPOCHS = 20
 assert torch.cuda.is_available(), "CUDA-enabled GPU is required!"
 print(f"Using GPU: {torch.cuda.get_device_name(0)}")
 
-class SimpleLSTM(nn.Module):
+class LSTM(nn.Module):
     def __init__(self):
         super().__init__()
         self.lstm = nn.LSTM(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, batch_first=True)
@@ -127,7 +127,7 @@ if __name__ == "__main__":
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     
     # Initialize model
-    model = SimpleLSTM().to('cuda')
+    model = LSTM().to('cuda')
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     
