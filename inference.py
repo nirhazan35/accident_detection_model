@@ -1,10 +1,10 @@
 import torch
 import numpy as np
-from train import LSTM
+from LSTM import LSTM
 
 class AccidentDetector:
     def __init__(self, model_path, threshold=0.5):
-        self.model = LSTM()  # Same as in train.py
+        self.model = LSTM()
         self.model.load_state_dict(torch.load(model_path))
         self.model.eval()
         self.threshold = threshold

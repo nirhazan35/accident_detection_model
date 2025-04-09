@@ -5,6 +5,7 @@ import torch.nn as nn
 INPUT_SIZE = 2 + 2  # num_vehicles + num_peds + (avg motion x, y)
 HIDDEN_SIZE = 64
 NUM_LAYERS = 2
+
 class LSTM(nn.Module):
     def __init__(self):
         super().__init__()

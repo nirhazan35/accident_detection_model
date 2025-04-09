@@ -9,26 +9,12 @@ from pathlib import Path
 import datetime
 
 # Configuration
-INPUT_SIZE = 2 + 2  # num_vehicles + num_peds + (avg motion x, y)
-HIDDEN_SIZE = 64
-NUM_LAYERS = 2
 BATCH_SIZE = 32
 EPOCHS = 20
 
 # Check if CUDA is available
 assert torch.cuda.is_available(), "CUDA-enabled GPU is required!"
 print(f"Using GPU: {torch.cuda.get_device_name(0)}")
-
-class LSTM(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.lstm = nn.LSTM(INPUT_SIZE, HIDDEN_SIZE, NUM_LAYERS, batch_first=True)
-        self.fc = nn.Linear(HIDDEN_SIZE, 1)
-    
-    def forward(self, x):
-        out, _ = self.lstm(x)
-        out = self.fc(out[:, -1, :])  # Use last timestep output
-        return torch.sigmoid(out)
 
 def load_features():
     # Check if metadata file exists

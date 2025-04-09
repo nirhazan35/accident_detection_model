@@ -1,13 +1,13 @@
 import torch
 import numpy as np
 import cv2
-from train import LSTM
+from LSTM import LSTM
 from ultralytics import YOLO
 from pathlib import Path
 
 class AccidentDetector:
     def __init__(self, model_path, threshold=0.5):
-        self.model = LSTM()  # Same as in train.py
+        self.model = LSTM()
         self.model = self.model.to('cuda')
         self.model.load_state_dict(torch.load(model_path))
         self.model.eval()
