@@ -4,6 +4,7 @@ import numpy as np
 import json
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
+from LSTM import LSTM
 import os
 from pathlib import Path
 import datetime
@@ -11,10 +12,8 @@ import datetime
 # Configuration
 BATCH_SIZE = 32
 EPOCHS = 20
-
-# Check if CUDA is available
-assert torch.cuda.is_available(), "CUDA-enabled GPU is required!"
-print(f"Using GPU: {torch.cuda.get_device_name(0)}")
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {DEVICE.upper()}")
 
 def load_features():
     # Check if metadata file exists
@@ -106,14 +105,14 @@ if __name__ == "__main__":
     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, shuffle=True)
     
     # Create DataLoaders
-    train_dataset = TensorDataset(X_train.cuda(), y_train.unsqueeze(1).cuda())
+    train_dataset = TensorDataset(X_train.to(DEVICE), y_train.unsqueeze(1).to(DEVICE))
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
     
-    val_dataset = TensorDataset(X_val.cuda(), y_val.unsqueeze(1).cuda())
+    val_dataset = TensorDataset(X_val.to(DEVICE), y_val.unsqueeze(1).to(DEVICE))
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     
     # Initialize model
-    model = LSTM().to('cuda')
+    model = LSTM().to(DEVICE)
     criterion = nn.BCELoss()
     optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
     

@@ -4,19 +4,24 @@ import cv2
 from LSTM import LSTM
 from ultralytics import YOLO
 from pathlib import Path
+from feature_extractor import SEQ_LENGTH, CLASSES
+
+# Configuration
+DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {DEVICE.upper()}")
 
 class AccidentDetector:
     def __init__(self, model_path, threshold=0.5):
         self.model = LSTM()
-        self.model = self.model.to('cuda')
+        self.model = self.model.to(DEVICE)
         self.model.load_state_dict(torch.load(model_path))
         self.model.eval()
         self.threshold = threshold
-        # Initialize YOLO model for feature extraction
-        self.yolo_model = YOLO("yolo11m.pt").to('cuda')
+        self.yolo_model = YOLO("yolo11m.pt").to(DEVICE)   # Initialize YOLO model for feature extraction
         # Configuration from feature_extractor.py
-        self.seq_length = 16
-        self.classes = [0, 1, 2, 3, 5, 7]  # Person, bicycle, car, motorcycle, bus, truck
+        self.seq_length = SEQ_LENGTH
+        self.classes = CLASSES  # Person, bicycle, car, motorcycle, bus, truck
+        print(f"SEQ_LENGTH: {self.seq_length}, CLASSES: {self.classes}") # remove @@@@@@@@@@@@@@@@@@@@@@@@@@@@
     
     def extract_features(self, video_path):
         """Extract features from video using the same process as feature_extractor.py"""
@@ -24,10 +29,6 @@ class AccidentDetector:
         cap = cv2.VideoCapture(str(video_path))
         features = []
         prev_positions = {}  # Track previous frame positions for speed calculation
-        
-        # Check if CUDA is available
-        assert torch.cuda.is_available(), "CUDA-enabled GPU is required!"
-        print(f"Using GPU: {torch.cuda.get_device_name(0)}")
         
         # Check if the video opened successfully
         if not cap.isOpened():
@@ -94,7 +95,7 @@ class AccidentDetector:
             processed_seq.append(processed_frame)
             
         # Convert to tensor with batch dimension
-        return torch.FloatTensor([processed_seq]).to('cuda')
+        return torch.FloatTensor([processed_seq]).to(DEVICE)
     
     def predict(self, video_path):
         """Predict if a video contains an accident"""
