@@ -21,7 +21,6 @@ class AccidentDetector:
         # Configuration from feature_extractor.py
         self.seq_length = SEQ_LENGTH
         self.classes = CLASSES  # Person, bicycle, car, motorcycle, bus, truck
-        print(f"SEQ_LENGTH: {self.seq_length}, CLASSES: {self.classes}") # remove @@@@@@@@@@@@@@@@@@@@@@@@@@@@
     
     def extract_features(self, video_path):
         """Extract features from video using the same process as feature_extractor.py"""
