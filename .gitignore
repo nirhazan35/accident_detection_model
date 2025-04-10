@@ -2,3 +2,5 @@ venv
 data
 features
 models
+training_metrics.png
+__pycache__

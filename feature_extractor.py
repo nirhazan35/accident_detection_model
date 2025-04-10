@@ -6,6 +6,7 @@ from ultralytics import YOLO
 import cv2
 from pathlib import Path
 from tqdm import tqdm
+from scipy.spatial.distance import cdist
 
 # Configuration
 SEQ_LENGTH = 16          # Number of frames per sequence
@@ -15,6 +16,48 @@ FEATURES_DIR = "features/train"
 DATA_DIR = "data"
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f"Using device: {DEVICE.upper()}")
+
+def calculate_collision_risk(boxes, velocities, track_ids):
+    """Calculate collision risk between objects"""
+    if len(boxes) < 2:
+        return 0.0
+    
+    try:
+        # Convert boxes to center points
+        centers = boxes[:, :2]
+        
+        # Calculate pairwise distances
+        distances = cdist(centers, centers)
+        
+        # Calculate relative velocities
+        velocities = np.array(velocities)
+        if len(velocities) == 0:
+            return 0.0
+            
+        relative_velocities = np.zeros((len(velocities), len(velocities), 2))
+        for i in range(len(velocities)):
+            for j in range(len(velocities)):
+                relative_velocities[i,j] = velocities[i] - velocities[j]
+        
+        # Calculate collision risk
+        risk = 0.0
+        count = 0
+        for i in range(len(boxes)):
+            for j in range(i+1, len(boxes)):
+                # Only consider vehicles
+                if track_ids[i] in [2,3,5,7] and track_ids[j] in [2,3,5,7]:
+                    # Calculate time to collision
+                    rel_vel = np.linalg.norm(relative_velocities[i,j])
+                    if rel_vel > 0:
+                        ttc = distances[i,j] / rel_vel
+                        if ttc < 2.0:  # Consider collision risk if TTC < 2 seconds
+                            risk += 1.0 / (ttc + 1e-6)
+                            count += 1
+        
+        return risk / (count + 1e-6)
+    except Exception as e:
+        print(f"Error in collision risk calculation: {e}")
+        return 0.0
 
 def extract_features(video_path, label):
     # Convert string path to Path object
@@ -32,6 +75,7 @@ def extract_features(video_path, label):
     
     features, metadata = [], []
     prev_positions = {}  # Track previous frame positions for speed calculation
+    prev_velocities = {}  # Track previous velocities
     
     # Initialize progress bar for frames
     pbar = tqdm(total=total_frames, desc=f"Processing {video_path.name}", unit='frame')
@@ -42,7 +86,7 @@ def extract_features(video_path, label):
         if not ret:
             break
         
-        # Track objects
+        # Track objects and get features
         results = model.track(frame, persist=True, classes=CLASSES, verbose=False, device=DEVICE)
         
         # Get object data
@@ -50,28 +94,43 @@ def extract_features(video_path, label):
         track_ids = results[0].boxes.id.cpu().numpy() if results[0].boxes.id is not None else []
         classes = results[0].boxes.cls.cpu().numpy()
         
-        # Initialize frame feature vector
-        frame_feature = {
-            "num_vehicles": np.sum(np.isin(classes, [2, 3, 5, 7])),
-            "num_peds": np.sum(classes == 0),
-            "motion": []
-        }
-        
-        # Calculate speeds using tracking IDs
+        # Calculate velocities and positions
+        velocities = []
         for idx, (track_id, box) in enumerate(zip(track_ids, boxes)):
             x, y = box[0], box[1]
             if track_id in prev_positions:
                 dx = x - prev_positions[track_id][0]
                 dy = y - prev_positions[track_id][1]
-                frame_feature["motion"].append([dx, dy])
+                velocities.append([dx, dy])
+                prev_velocities[track_id] = [dx, dy]
+            else:
+                velocities.append([0, 0])
+                prev_velocities[track_id] = [0, 0]
             prev_positions[track_id] = (x, y)
+        
+        # Calculate collision risk
+        collision_risk = calculate_collision_risk(boxes, velocities, classes)
+        
+        # Get scene features
+        scene_features = np.zeros(1024)  # Placeholder for backbone features
+        
+        # Initialize frame feature vector
+        frame_feature = {
+            "num_vehicles": np.sum(np.isin(classes, [2, 3, 5, 7])),
+            "num_peds": np.sum(classes == 0),
+            "motion": velocities,
+            "positions": boxes[:, :2].tolist(),  # Store normalized positions
+            "sizes": boxes[:, 2:].tolist(),      # Store normalized sizes
+            "collision_risk": collision_risk,
+            "scene_features": scene_features.tolist()  # Placeholder for backbone features
+        }
         
         features.append(frame_feature)
         frame_count += 1
-        pbar.update(1)  # Update frame progress
+        pbar.update(1)
     
     cap.release()
-    pbar.close()  # Close frame progress bar
+    pbar.close()
     
     if not features:
         print(f"No frames extracted from: {video_path}")
