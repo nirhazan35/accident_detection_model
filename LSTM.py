@@ -99,6 +99,11 @@ class LSTM(nn.Module):
         # Process features
         scene_features, detection_features = self.process_features(features)
         
+        # Move tensors to device
+        device = next(self.parameters()).device
+        scene_features = scene_features.to(device)
+        detection_features = detection_features.to(device)
+        
         # Process scene features
         scene_out = self.scene_fc(scene_features)
         

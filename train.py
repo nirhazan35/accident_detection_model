@@ -34,7 +34,7 @@ class FocalLoss(nn.Module):
 def custom_collate(batch):
     """Custom collate function to handle our feature format"""
     features, labels = zip(*batch)
-    return list(features), torch.stack(labels)
+    return list(features), torch.stack(labels).to(DEVICE)
 
 class AccidentDataset(Dataset):
     def __init__(self, features, labels):
@@ -140,11 +140,11 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=custom_collate)
     
-    # Initialize model
+    # Initialize model and move to device
     model = LSTM().to(DEVICE)
     criterion = FocalLoss(alpha=0.25, gamma=2.0)  # Focus more on hard examples
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5, verbose=True)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
     
     # Training metrics
     train_losses = []
