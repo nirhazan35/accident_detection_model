@@ -32,8 +32,8 @@ def extract_features(video_path, label):
     neck = model.model.model[1]      # Second module is the neck
     
     # Log model structure
-    logging.info(f"Backbone layers: {len(backbone)}")
-    logging.info(f"Neck layers: {len(neck)}")
+    logging.info(f"Backbone type: {type(backbone)}")
+    logging.info(f"Neck type: {type(neck)}")
     
     cap = cv2.VideoCapture(str(video_path))
     
@@ -67,40 +67,34 @@ def extract_features(video_path, label):
         # Extract features using YOLO's forward pass
         with torch.no_grad():
             # Get backbone features
-            backbone_outputs = backbone(frame)
+            backbone_output = backbone(frame)
             
             # Get neck features
-            neck_outputs = neck(backbone_outputs)
+            neck_output = neck(backbone_output)
             
             # Process backbone features
-            backbone_features = []
-            for i, feat in enumerate(backbone_outputs):
-                if isinstance(feat, torch.Tensor):
-                    # Flatten and normalize each backbone feature
-                    flat_feat = feat.view(feat.size(0), -1)
-                    norm_feat = (flat_feat - flat_feat.mean()) / (flat_feat.std() + 1e-6)
-                    backbone_features.append(norm_feat)
-                    if i == 0:  # Log dimensions of first feature map
-                        logging.info(f"Backbone feature {i} shape: {feat.shape}, flattened: {flat_feat.shape}")
+            if isinstance(backbone_output, tuple):
+                backbone_features = backbone_output[-1]  # Take the last output
+            else:
+                backbone_features = backbone_output
             
             # Process neck features
-            neck_features = []
-            for i, feat in enumerate(neck_outputs):
-                if isinstance(feat, torch.Tensor):
-                    # Flatten and normalize each neck feature
-                    flat_feat = feat.view(feat.size(0), -1)
-                    norm_feat = (flat_feat - flat_feat.mean()) / (flat_feat.std() + 1e-6)
-                    neck_features.append(norm_feat)
-                    if i == 0:  # Log dimensions of first feature map
-                        logging.info(f"Neck feature {i} shape: {feat.shape}, flattened: {flat_feat.shape}")
+            if isinstance(neck_output, tuple):
+                neck_features = neck_output[-1]  # Take the last output
+            else:
+                neck_features = neck_output
             
-            # Concatenate all features
-            backbone_features = torch.cat(backbone_features, dim=1)
-            neck_features = torch.cat(neck_features, dim=1)
+            # Flatten the features
+            backbone_features = backbone_features.view(backbone_features.size(0), -1)
+            neck_features = neck_features.view(neck_features.size(0), -1)
             
-            # Log final feature dimensions
-            logging.info(f"Final backbone features shape: {backbone_features.shape}")
-            logging.info(f"Final neck features shape: {neck_features.shape}")
+            # Log feature dimensions
+            logging.info(f"Backbone features shape: {backbone_features.shape}")
+            logging.info(f"Neck features shape: {neck_features.shape}")
+            
+            # Normalize features
+            backbone_features = (backbone_features - backbone_features.mean()) / (backbone_features.std() + 1e-6)
+            neck_features = (neck_features - neck_features.mean()) / (neck_features.std() + 1e-6)
             
             # Create frame feature
             frame_feature = {
