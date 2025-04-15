@@ -6,138 +6,234 @@ from ultralytics import YOLO
 import cv2
 from pathlib import Path
 from tqdm import tqdm
-import logging
+from config import DEVICE, SEQ_LENGTH, OVERLAP, FEATURES_DIR, FEATURE_SPEC, BACKBONE_LAYERS
 
-# Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-# Configuration
-SEQ_LENGTH = 16          # Number of frames per sequence
-OVERLAP = 8              # Overlap between sequences
-CLASSES = [0, 1, 2, 3, 5, 7]  # Person, bicycle, car, motorcycle, bus, truck
-FEATURES_DIR = "features/train"
-DATA_DIR = "data"
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-print(f"Using device: {DEVICE.upper()}")
-
-def extract_features(video_path, label):
-    # Convert string path to Path object
-    video_path = Path(video_path)
-    
-    # Initialize YOLO model
-    model = YOLO("yolo11m.pt").to(DEVICE)
-    
-    # Get the model's backbone and neck
-    backbone = model.model.model[0]  # First module is the backbone
-    neck = model.model.model[1]      # Second module is the neck
-    
-    # Log model structure
-    logging.info(f"Backbone type: {type(backbone)}")
-    logging.info(f"Neck type: {type(neck)}")
-    
-    cap = cv2.VideoCapture(str(video_path))
-    
-    # Get total frames for progress bar
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
-    if not cap.isOpened():
-        logging.error(f"Failed to open video: {video_path}")
-        return None
-    
-    features = []
-    
-    # Initialize progress bar for frames
-    pbar = tqdm(total=total_frames, desc=f"Processing {video_path.name}", unit='frame')
-    
-    frame_count = 0
-    while cap.isOpened():
-        ret, frame = cap.read()
-        if not ret:
-            break
+class YOLOFeatureExtractor:
+    def __init__(self):
+        # Initialize YOLO model
+        self.model = YOLO("yolo11m.pt").to(DEVICE)
         
-        # Preprocess frame
+        # Get backbone layers (first 11 layers)
+        self.backbone = self.model.model.model[0:11]
+        
+        # Get specified backbone layers
+        self.selected_layers = []
+        for layer_idx in BACKBONE_LAYERS["use_layers"]:
+            if layer_idx < 11:  # We know there are 11 backbone layers
+                self.selected_layers.append(self.backbone[layer_idx])
+            else:
+                print(f"Warning: Layer {layer_idx} not found in backbone")
+        
+        if not self.selected_layers:
+            raise ValueError("No valid layers selected from backbone")
+        
+        # Initialize feature reducer with known size
+        self.feature_reducer = torch.nn.Sequential(
+            torch.nn.Linear(BACKBONE_LAYERS["total_features"], FEATURE_SPEC["dimensions"]),
+            torch.nn.ReLU(),
+            torch.nn.Dropout(0.1)
+        ).to(DEVICE)
+        
+        # Enable memory efficient mode
+        torch.backends.cudnn.benchmark = True
+        
+        # For real-time processing
+        self.frame_buffer = []
+        self.frame_skip = 2  # Process every n-th frame for efficiency
+    
+    def preprocess_frame(self, frame):
+        """Preprocess a single frame for feature extraction"""
+        # Convert BGR to RGB
         frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        frame = cv2.resize(frame, (640, 640))  # YOLO default input size
-        frame = frame.transpose(2, 0, 1)  # HWC to CHW
-        frame = np.ascontiguousarray(frame)
+        
+        # Resize to lower resolution for faster processing
+        frame = cv2.resize(frame, (320, 320))  # Smaller resolution (half of 640x640)
+        
+        # Convert to tensor and add batch dimension
         frame = torch.from_numpy(frame).to(DEVICE)
-        frame = frame.float() / 255.0
+        frame = frame.permute(2, 0, 1)  # HWC to CHW
         frame = frame.unsqueeze(0)  # Add batch dimension
         
-        # Extract features using YOLO's forward pass
-        with torch.no_grad():
-            # Get backbone features
-            backbone_output = backbone(frame)
-            
-            # Get neck features
-            neck_output = neck(backbone_output)
-            
-            # Process backbone features
-            if isinstance(backbone_output, tuple):
-                backbone_features = backbone_output[-1]  # Take the last output
-            else:
-                backbone_features = backbone_output
-            
-            # Process neck features
-            if isinstance(neck_output, tuple):
-                neck_features = neck_output[-1]  # Take the last output
-            else:
-                neck_features = neck_output
-            
-            # Flatten the features
-            backbone_features = backbone_features.view(backbone_features.size(0), -1)
-            neck_features = neck_features.view(neck_features.size(0), -1)
-            
-            # Log feature dimensions
-            logging.info(f"Backbone features shape: {backbone_features.shape}")
-            logging.info(f"Neck features shape: {neck_features.shape}")
-            
-            # Normalize features
-            backbone_features = (backbone_features - backbone_features.mean()) / (backbone_features.std() + 1e-6)
-            neck_features = (neck_features - neck_features.mean()) / (neck_features.std() + 1e-6)
-            
-            # Create frame feature
-            frame_feature = {
-                "backbone_features": backbone_features.cpu().numpy()[0].tolist(),
-                "neck_features": neck_features.cpu().numpy()[0].tolist()
-            }
-            
-            features.append(frame_feature)
+        # Normalize to [0, 1]
+        frame = frame.float() / 255.0
         
-        frame_count += 1
-        pbar.update(1)
+        return frame
     
-    cap.release()
-    pbar.close()
+    def extract_frame_features(self, frame):
+        """Extract features from a single frame using selected layers"""
+        with torch.no_grad():
+            # Get features from each selected layer
+            layer_features = []
+            x = frame
+            
+            # Process through backbone layers sequentially
+            for i, layer in enumerate(self.backbone):
+                if i in BACKBONE_LAYERS["use_layers"]:
+                    x = layer(x)
+                    # Resize to target spatial size
+                    spatial_idx = BACKBONE_LAYERS["use_layers"].index(i)
+                    target_size = BACKBONE_LAYERS["spatial_sizes"][spatial_idx]
+                    if x.shape[-1] != target_size:
+                        x = torch.nn.functional.adaptive_avg_pool2d(x, (target_size, target_size))
+                    
+                    # Print diagnostic information about feature shapes
+                    print(f"Layer {i} output shape: {x.shape}")
+                    
+                    # Flatten the features
+                    flattened = x.view(x.size(0), -1)
+                    print(f"Layer {i} flattened shape: {flattened.shape}")
+                    
+                    layer_features.append(flattened)
+                else:
+                    x = layer(x)  # Still process through non-selected layers to maintain proper channel dimensions
+            
+            # Concatenate features from all selected layers
+            combined_features = torch.cat(layer_features, dim=1)
+            print(f"Combined features shape: {combined_features.shape}")
+            
+            # Check if feature sizes match expected size
+            if combined_features.size(1) != BACKBONE_LAYERS["total_features"]:
+                print(f"WARNING: Feature size mismatch! Got {combined_features.size(1)}, expected {BACKBONE_LAYERS['total_features']}")
+                print("Adjusting feature reducer to match actual dimensions...")
+                # Recreate feature reducer with correct dimensions
+                self.feature_reducer = torch.nn.Sequential(
+                    torch.nn.Linear(combined_features.size(1), FEATURE_SPEC["dimensions"]),
+                    torch.nn.ReLU(),
+                    torch.nn.Dropout(0.1)
+                ).to(DEVICE)
+            
+            # Reduce features
+            reduced_features = self.feature_reducer(combined_features)
+            
+            # Convert to numpy and normalize
+            features_np = reduced_features.cpu().numpy()
+            if FEATURE_SPEC["normalized"]:
+                features_np = (features_np - features_np.mean()) / (features_np.std() + 1e-6)
+            
+            # Clear memory
+            del layer_features, combined_features, reduced_features
+            torch.cuda.empty_cache()
+            
+            return {
+                "features": features_np[0].tolist()
+            }
     
-    if not features:
-        logging.error(f"No frames extracted from: {video_path}")
+    def process_video(self, video_path, label=None, real_time=False):
+        """Process a video file and extract features
+        If real_time is True, processes in a streaming fashion"""
+        video_path = Path(video_path)
+        cap = cv2.VideoCapture(str(video_path))
+        
+        if not cap.isOpened():
+            print(f"Failed to open video: {video_path}")
+            return None
+        
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        features = []
+        
+        # Process frames
+        frame_count = 0
+        pbar = tqdm(total=total_frames, desc=f"Processing {video_path.name}", unit='frame')
+        
+        while cap.isOpened():
+            ret, frame = cap.read()
+            if not ret:
+                break
+            
+            frame_count += 1
+            if frame_count % self.frame_skip != 0:
+                pbar.update(1)
+                continue
+            
+            # Preprocess and extract features
+            processed_frame = self.preprocess_frame(frame)
+            frame_features = self.extract_frame_features(processed_frame)
+            features.append(frame_features)
+            
+            pbar.update(1)
+            
+            # For real-time processing, maintain a buffer of recent features
+            if real_time:
+                self.frame_buffer.append(frame_features)
+                if len(self.frame_buffer) > SEQ_LENGTH:
+                    self.frame_buffer.pop(0)
+                
+                # If we have enough frames for a sequence, we could run inference here
+                if len(self.frame_buffer) == SEQ_LENGTH:
+                    # This is where real-time inference would happen
+                    pass
+        
+        cap.release()
+        pbar.close()
+        
+        if not features:
+            print(f"No frames extracted from: {video_path}")
+            return None
+        
+        # For offline processing, split into sequences with overlap
+        if not real_time and label is not None:
+            sequences = []
+            for i in range(0, len(features) - SEQ_LENGTH + 1, OVERLAP):
+                seq = features[i:i+SEQ_LENGTH]
+                sequences.append({
+                    "frames": seq,
+                    "label": label,
+                    "source_video": video_path.name
+                })
+            return sequences
+        
+        return features
+    
+    def process_realtime_frame(self, frame):
+        """Process a single frame for real-time inference"""
+        processed_frame = self.preprocess_frame(frame)
+        frame_features = self.extract_frame_features(processed_frame)
+        
+        # Add to buffer and remove oldest if necessary
+        self.frame_buffer.append(frame_features)
+        if len(self.frame_buffer) > SEQ_LENGTH:
+            self.frame_buffer.pop(0)
+        
+        # Return current sequence if we have enough frames
+        if len(self.frame_buffer) == SEQ_LENGTH:
+            return self.frame_buffer.copy()
+        
         return None
+
+def extract_features(video_path, label, split):
+    """Main function to extract features from a video"""
+    extractor = YOLOFeatureExtractor()
+    sequences = extractor.process_video(video_path, label)
     
-    # Split into overlapping sequences
-    sequences = []
-    for i in range(0, len(features) - SEQ_LENGTH + 1, OVERLAP):
-        seq = features[i:i+SEQ_LENGTH]
-        sequences.append({
-            "features": seq,
+    if sequences:
+        # Create output directory based on split (train or val)
+        output_dir = f"features/{split}"
+        os.makedirs(output_dir, exist_ok=True)
+        save_pbar = tqdm(total=len(sequences), desc=f"Saving sequences for {Path(video_path).name}", unit='seq')
+        
+        for idx, seq in enumerate(sequences):
+            # Save as dict with frames key to match expected LSTM format
+            seq_filename = f"{output_dir}/seq_{Path(video_path).stem}_{idx}.npy"
+            try:
+                np.save(seq_filename, seq)
+                # Verify the saved file
+                loaded_seq = np.load(seq_filename, allow_pickle=True).item()
+                if not isinstance(loaded_seq, dict) or "frames" not in loaded_seq:
+                    print(f"Warning: Saved sequence format may be incorrect in {seq_filename}")
+            except Exception as e:
+                print(f"Error saving sequence {idx}: {e}")
+            save_pbar.update(1)
+        
+        save_pbar.close()
+        
+        return {
+            "video_name": Path(video_path).name,
+            "total_sequences": len(sequences),
             "label": label,
-            "source_video": video_path.name
-        })
+            "split": split
+        }
     
-    # Save features with progress bar
-    save_pbar = tqdm(total=len(sequences), desc=f"Saving sequences for {video_path.name}", unit='seq')
-    os.makedirs(FEATURES_DIR, exist_ok=True)
-    for idx, seq in enumerate(sequences):
-        np.save(f"{FEATURES_DIR}/seq_{video_path.stem}_{idx}.npy", seq["features"])
-        save_pbar.update(1)
-    save_pbar.close()
-    
-    metadata = {
-        "video_name": video_path.name,
-        "total_sequences": len(sequences),
-        "label": label
-    }
-    return metadata
+    return None
 
 if __name__ == "__main__":
     all_metadata = []
@@ -151,31 +247,27 @@ if __name__ == "__main__":
             any(f.lower().endswith(ext) for ext in video_extensions)
         ]
     
-    # Get all video files
-    accident_videos = get_video_files("data/accidents")
-    non_accident_videos = get_video_files("data/non_accidents")
-    total_videos = len(accident_videos) + len(non_accident_videos)
-    
-    # Main progress bar for all videos
-    main_pbar = tqdm(total=total_videos, desc="Processing all videos", unit='video')
-    
-    # Process accident videos (label=1)
-    for video_file in accident_videos:
-        video_path = os.path.join("data/accidents", video_file)
-        metadata = extract_features(video_path, label=1)
-        if metadata:
-            all_metadata.append(metadata)
-        main_pbar.update(1)
-    
-    # Process non-accident videos (label=0)
-    for video_file in non_accident_videos:
-        video_path = os.path.join("data/non_accidents", video_file)
-        metadata = extract_features(video_path, label=0)
-        if metadata:
-            all_metadata.append(metadata)
-        main_pbar.update(1)
-    
-    main_pbar.close()
+    # Process videos from both train and val splits
+    for split in ["train", "val"]:
+        # Process accident videos (label=1)
+        accident_folder = f"data/{split}/accidents"
+        if os.path.exists(accident_folder):
+            accident_videos = get_video_files(accident_folder)
+            for video_file in accident_videos:
+                video_path = os.path.join(accident_folder, video_file)
+                metadata = extract_features(video_path, label=1, split=split)
+                if metadata:
+                    all_metadata.append(metadata)
+        
+        # Process non-accident videos (label=0)
+        non_accident_folder = f"data/{split}/non_accidents"
+        if os.path.exists(non_accident_folder):
+            non_accident_videos = get_video_files(non_accident_folder)
+            for video_file in non_accident_videos:
+                video_path = os.path.join(non_accident_folder, video_file)
+                metadata = extract_features(video_path, label=0, split=split)
+                if metadata:
+                    all_metadata.append(metadata)
     
     # Save metadata
     with open("features/metadata.json", "w") as f:
