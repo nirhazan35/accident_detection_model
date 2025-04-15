@@ -8,16 +8,19 @@ from LSTM import LSTM
 from pathlib import Path
 import datetime
 from sklearn.metrics import precision_recall_curve, average_precision_score, confusion_matrix, f1_score
+from sklearn.metrics import roc_curve, auc, accuracy_score, balanced_accuracy_score
 import matplotlib.pyplot as plt
+from math import sqrt
+from config import TRAINING_CONFIG
 
 # Configuration
-BATCH_SIZE = 32
+BATCH_SIZE = TRAINING_CONFIG["batch_size"]
 EPOCHS = 50
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
-LEARNING_RATE = 1e-4
-WEIGHT_DECAY = 1e-5
+LEARNING_RATE = TRAINING_CONFIG["learning_rate"]
+WEIGHT_DECAY = TRAINING_CONFIG["weight_decay"]
 # Target precision-recall balance (higher values prioritize precision)
-PRECISION_WEIGHT = 0.6  # Balance between precision (1.0) and recall (0.0)
+PRECISION_WEIGHT = TRAINING_CONFIG["precision_weight"]  # Balance between precision (1.0) and recall (0.0)
 print(f"Using device: {DEVICE.upper()}")
 
 class FocalLoss(nn.Module):
@@ -60,7 +63,10 @@ def load_features_from_split(split):
     print(f"Found {len(feature_files)} feature files in {split} split.")
     
     features, labels = [], []
+    valid_files = 0
+    invalid_files = 0
     
+    # Load sequences without verbose logging
     for feature_file in feature_files:
         try:
             # Load the sequence
@@ -83,17 +89,19 @@ def load_features_from_split(split):
                             label = 0
                     
                     labels.append(label)
+                    valid_files += 1
                 else:
-                    print(f"Warning: File {feature_file} has invalid frame format. Skipping.")
+                    invalid_files += 1
             else:
-                print(f"Warning: File {feature_file} has no 'frames' key. Skipping.")
+                invalid_files += 1
         except Exception as e:
             print(f"Error loading {feature_file}: {e}")
+            invalid_files += 1
     
     if not features:
         raise ValueError(f"No valid feature files were loaded from {split} split.")
     
-    print(f"Loaded {len(features)} sequences for {split} split.")
+    print(f"Loaded {valid_files} valid sequences for {split} split. Skipped {invalid_files} invalid files.")
     
     # Count class distribution
     total_positives = sum(labels)
@@ -117,15 +125,13 @@ def find_optimal_threshold(precisions, recalls, thresholds, precision_weight=0.5
     best_recall = 0
     
     # Calculate F-beta score with beta that gives precision the desired weight
-    # beta = sqrt((1-precision_weight)/precision_weight)
-    beta = (1 - precision_weight) / precision_weight
+    # For F-beta, beta < 1 gives more weight to precision
+    # beta = weight_recall / weight_precision
+    beta = sqrt((1-precision_weight)/precision_weight)
     
     for p, r, t in zip(precisions, recalls, thresholds):
-        # Skip if precision or recall is too low
-        if p < 0.3 or r < 0.3:
-            continue
-        
-        # F-beta score
+        # Calculate F-beta score without arbitrary filtering
+        # This ensures we don't introduce bias by excluding valid thresholds
         score = calculate_f_beta_score(p, r, beta)
         
         if score > best_score:
@@ -137,10 +143,10 @@ def find_optimal_threshold(precisions, recalls, thresholds, precision_weight=0.5
     return best_threshold, best_precision, best_recall, best_score
 
 def plot_metrics(train_losses, val_losses, precisions, recalls, thresholds, confusion_mat):
-    fig = plt.figure(figsize=(20, 8))
+    fig = plt.figure(figsize=(20, 12))
     
     # Plot losses
-    plt.subplot(1, 3, 1)
+    plt.subplot(2, 2, 1)
     plt.plot(train_losses, label='Train Loss')
     plt.plot(val_losses, label='Val Loss')
     plt.xlabel('Epoch')
@@ -149,7 +155,7 @@ def plot_metrics(train_losses, val_losses, precisions, recalls, thresholds, conf
     plt.title('Training and Validation Loss')
     
     # Plot precision-recall curve
-    plt.subplot(1, 3, 2)
+    plt.subplot(2, 2, 2)
     plt.plot(recalls, precisions)
     plt.xlim([0.0, 1.0])
     plt.ylim([0.0, 1.0])
@@ -157,8 +163,19 @@ def plot_metrics(train_losses, val_losses, precisions, recalls, thresholds, conf
     plt.ylabel('Precision')
     plt.title('Precision-Recall Curve')
     
+    # Plot ROC curve if available
+    if 'roc_curve_data' in globals():
+        plt.subplot(2, 2, 3)
+        fpr, tpr, _ = roc_curve_data
+        plt.plot(fpr, tpr)
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.0])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'ROC Curve (AUC = {roc_auc:.3f})')
+    
     # Plot confusion matrix
-    plt.subplot(1, 3, 3)
+    plt.subplot(2, 2, 4)
     plt.imshow(confusion_mat, interpolation='nearest', cmap=plt.cm.Blues)
     plt.title('Confusion Matrix')
     plt.colorbar()
@@ -178,12 +195,74 @@ def plot_metrics(train_losses, val_losses, precisions, recalls, thresholds, conf
     plt.savefig('training_metrics.png')
     plt.close()
 
+def evaluate_model(model, data_loader, threshold=0.5):
+    """Perform comprehensive evaluation of model performance"""
+    model.eval()
+    all_outputs = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for batch_features, batch_labels in data_loader:
+            outputs, _ = model(batch_features)
+            all_outputs.extend(outputs.cpu().numpy())
+            all_labels.extend(batch_labels.cpu().numpy())
+    
+    # Convert to numpy arrays
+    all_outputs = np.array(all_outputs).flatten()
+    all_labels = np.array(all_labels)
+    
+    # Calculate precision-recall metrics
+    precision, recall, pr_thresholds = precision_recall_curve(all_labels, all_outputs)
+    ap_score = average_precision_score(all_labels, all_outputs)
+    
+    # Calculate ROC metrics
+    fpr, tpr, roc_thresholds = roc_curve(all_labels, all_outputs)
+    roc_auc_score = auc(fpr, tpr)
+    
+    # Calculate F1 score at the specified threshold
+    predicted_labels = (all_outputs >= threshold).astype(int)
+    f1 = f1_score(all_labels, predicted_labels)
+    
+    # Calculate confusion matrix
+    cm = confusion_matrix(all_labels, predicted_labels, labels=[0, 1])
+    
+    # Calculate accuracy metrics
+    accuracy = accuracy_score(all_labels, predicted_labels)
+    balanced_acc = balanced_accuracy_score(all_labels, predicted_labels)
+    
+    # Calculate precision and recall at the threshold
+    threshold_precision = precision[np.argmin(np.abs(pr_thresholds - threshold))]
+    threshold_recall = recall[np.argmin(np.abs(pr_thresholds - threshold))]
+    
+    # Store ROC curve data for plotting
+    global roc_curve_data, roc_auc
+    roc_curve_data = (fpr, tpr, roc_thresholds)
+    roc_auc = roc_auc_score
+    
+    return {
+        'ap_score': ap_score,
+        'roc_auc': roc_auc_score,
+        'f1_score': f1,
+        'accuracy': accuracy,
+        'balanced_accuracy': balanced_acc,
+        'precision': threshold_precision,
+        'recall': threshold_recall,
+        'confusion_matrix': cm,
+        'precision_recall_curve': (precision, recall, pr_thresholds),
+        'roc_curve': (fpr, tpr, roc_thresholds)
+    }
+
 if __name__ == "__main__":
+    print("Starting accident detection model training...")
+    
     # Create models directory if it doesn't exist
     os.makedirs("models", exist_ok=True)
     
     # Load data directly from train and val splits
+    print("\nLoading training data...")
     train_features, train_labels = load_features_from_split("train")
+    
+    print("\nLoading validation data...")
     val_features, val_labels = load_features_from_split("val")
     
     # Create datasets
@@ -208,6 +287,7 @@ if __name__ == "__main__":
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, collate_fn=custom_collate)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, collate_fn=custom_collate)
     
+    print(f"\nInitializing model on {DEVICE}...")
     # Initialize model and move to device
     model = LSTM().to(DEVICE)
     optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
@@ -219,6 +299,10 @@ if __name__ == "__main__":
     best_f_score = 0.0
     no_improve_epochs = 0
     best_confusion_matrix = np.zeros((2, 2))
+    best_model_path = None
+    
+    print("\nStarting training loop...")
+    print(f"Training for up to {EPOCHS} epochs with early stopping")
     
     # Training loop
     for epoch in range(EPOCHS):
@@ -265,8 +349,11 @@ if __name__ == "__main__":
         predicted_labels = (np.array(all_outputs) >= best_threshold).astype(int)
         conf_matrix = confusion_matrix(all_labels, predicted_labels, labels=[0, 1])
         
+        # Calculate accuracy
+        accuracy = accuracy_score(all_labels, predicted_labels)
+        
         print(f"Epoch {epoch+1}/{EPOCHS}")
-        print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}")
+        print(f"Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Accuracy: {accuracy:.4f}")
         print(f"AP Score: {ap_score:.4f}, F-Score: {f_score:.4f}")
         print(f"Precision: {best_precision:.4f}, Recall: {best_recall:.4f} at threshold {best_threshold:.4f}")
         
@@ -286,19 +373,62 @@ if __name__ == "__main__":
                 'recall': best_recall,
                 'f_score': f_score
             }, model_path)
+            best_model_path = model_path
             print(f"Saved new best model with F-score {f_score:.4f}")
         else:
             no_improve_epochs += 1
             print(f"No improvement for {no_improve_epochs} epochs")
         
         # Early stopping
-        if no_improve_epochs >= 10:
+        if no_improve_epochs >= TRAINING_CONFIG["early_stopping_patience"]:
             print(f"No improvement for {no_improve_epochs} epochs. Stopping training.")
             break
         
         # Update learning rate
         scheduler.step(f_score)
     
-    # Plot metrics
-    plot_metrics(train_losses, val_losses, precision, recall, thresholds, best_confusion_matrix)
-    print("Training complete. Metrics saved to training_metrics.png")
+    # Load the best model for final evaluation
+    if best_model_path is not None:
+        print(f"\nLoading best model from {best_model_path} for final evaluation")
+        checkpoint = torch.load(best_model_path)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        best_threshold = checkpoint['threshold']
+        
+        # Perform comprehensive evaluation
+        print("\nPerforming final evaluation on validation set...")
+        eval_results = evaluate_model(model, val_loader, threshold=best_threshold)
+        
+        print("\n===== FINAL MODEL EVALUATION =====")
+        print(f"Average Precision Score: {eval_results['ap_score']:.4f}")
+        print(f"ROC AUC Score: {eval_results['roc_auc']:.4f}")
+        print(f"F1 Score: {eval_results['f1_score']:.4f}")
+        print(f"Accuracy: {eval_results['accuracy']:.4f}")
+        print(f"Balanced Accuracy: {eval_results['balanced_accuracy']:.4f}")
+        print(f"Precision at threshold {best_threshold:.4f}: {eval_results['precision']:.4f}")
+        print(f"Recall at threshold {best_threshold:.4f}: {eval_results['recall']:.4f}")
+        print("\nConfusion Matrix:")
+        print(eval_results['confusion_matrix'])
+        
+        # Save detailed evaluation results
+        with open("model_evaluation.json", "w") as f:
+            # Convert numpy values to Python types for JSON serialization
+            serializable_results = {
+                k: v.tolist() if isinstance(v, np.ndarray) else v 
+                for k, v in eval_results.items() 
+                if k not in ['precision_recall_curve', 'roc_curve']
+            }
+            json.dump(serializable_results, f, indent=2)
+        
+        # Plot metrics using the best confusion matrix
+        plot_metrics(
+            train_losses, 
+            val_losses, 
+            eval_results['precision_recall_curve'][0],
+            eval_results['precision_recall_curve'][1], 
+            eval_results['precision_recall_curve'][2],
+            eval_results['confusion_matrix']
+        )
+        
+        print("Training complete. Metrics saved to training_metrics.png and model_evaluation.json")
+    else:
+        print("No model was saved during training. Check for issues with the training process.")

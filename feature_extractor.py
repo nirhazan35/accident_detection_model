@@ -76,20 +76,14 @@ class YOLOFeatureExtractor:
                     if x.shape[-1] != target_size:
                         x = torch.nn.functional.adaptive_avg_pool2d(x, (target_size, target_size))
                     
-                    # Print diagnostic information about feature shapes
-                    print(f"Layer {i} output shape: {x.shape}")
-                    
                     # Flatten the features
                     flattened = x.view(x.size(0), -1)
-                    print(f"Layer {i} flattened shape: {flattened.shape}")
-                    
                     layer_features.append(flattened)
                 else:
                     x = layer(x)  # Still process through non-selected layers to maintain proper channel dimensions
             
             # Concatenate features from all selected layers
             combined_features = torch.cat(layer_features, dim=1)
-            print(f"Combined features shape: {combined_features.shape}")
             
             # Check if feature sizes match expected size
             if combined_features.size(1) != BACKBONE_LAYERS["total_features"]:
@@ -202,6 +196,7 @@ class YOLOFeatureExtractor:
 
 def extract_features(video_path, label, split):
     """Main function to extract features from a video"""
+    print(f"Processing video: {Path(video_path).name} (label: {label}, split: {split})")
     extractor = YOLOFeatureExtractor()
     sequences = extractor.process_video(video_path, label)
     
@@ -209,22 +204,16 @@ def extract_features(video_path, label, split):
         # Create output directory based on split (train or val)
         output_dir = f"features/{split}"
         os.makedirs(output_dir, exist_ok=True)
-        save_pbar = tqdm(total=len(sequences), desc=f"Saving sequences for {Path(video_path).name}", unit='seq')
         
+        # Save sequences without verbose logging
         for idx, seq in enumerate(sequences):
-            # Save as dict with frames key to match expected LSTM format
             seq_filename = f"{output_dir}/seq_{Path(video_path).stem}_{idx}.npy"
             try:
                 np.save(seq_filename, seq)
-                # Verify the saved file
-                loaded_seq = np.load(seq_filename, allow_pickle=True).item()
-                if not isinstance(loaded_seq, dict) or "frames" not in loaded_seq:
-                    print(f"Warning: Saved sequence format may be incorrect in {seq_filename}")
             except Exception as e:
                 print(f"Error saving sequence {idx}: {e}")
-            save_pbar.update(1)
         
-        save_pbar.close()
+        print(f"Saved {len(sequences)} sequences for {Path(video_path).name}")
         
         return {
             "video_name": Path(video_path).name,
@@ -249,10 +238,13 @@ if __name__ == "__main__":
     
     # Process videos from both train and val splits
     for split in ["train", "val"]:
+        print(f"\n--- Processing {split.upper()} split ---\n")
+        
         # Process accident videos (label=1)
         accident_folder = f"data/{split}/accidents"
         if os.path.exists(accident_folder):
             accident_videos = get_video_files(accident_folder)
+            print(f"Found {len(accident_videos)} accident videos in {split} split")
             for video_file in accident_videos:
                 video_path = os.path.join(accident_folder, video_file)
                 metadata = extract_features(video_path, label=1, split=split)
@@ -263,6 +255,7 @@ if __name__ == "__main__":
         non_accident_folder = f"data/{split}/non_accidents"
         if os.path.exists(non_accident_folder):
             non_accident_videos = get_video_files(non_accident_folder)
+            print(f"Found {len(non_accident_videos)} non-accident videos in {split} split")
             for video_file in non_accident_videos:
                 video_path = os.path.join(non_accident_folder, video_file)
                 metadata = extract_features(video_path, label=0, split=split)
@@ -272,3 +265,7 @@ if __name__ == "__main__":
     # Save metadata
     with open("features/metadata.json", "w") as f:
         json.dump(all_metadata, f)
+    
+    print("\nFeature extraction complete!")
+    print(f"Processed {len(all_metadata)} videos total")
+    print(f"Metadata saved to features/metadata.json")

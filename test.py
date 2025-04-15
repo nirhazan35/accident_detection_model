@@ -2,81 +2,58 @@ import torch
 import numpy as np
 import cv2
 from LSTM import LSTM
-from ultralytics import YOLO
+from feature_extractor import YOLOFeatureExtractor
 from pathlib import Path
-from feature_extractor import SEQ_LENGTH, CLASSES
-import matplotlib.pyplot as plt
-from scipy.spatial.distance import cdist
+from config import SEQ_LENGTH, DEVICE
+import os
 import time
 
 # Configuration
-MODEL_PATH = "models/accident_lstm_20250410_191002.pth"
-VIDEO_PATH = "data/test/bSZkOI7eF8k.mp4"
-DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+# Find most recent model file
+models_dir = "models"
+if os.path.exists(models_dir) and os.listdir(models_dir):
+    model_files = [f for f in os.listdir(models_dir) if f.startswith("accident_lstm_") and f.endswith(".pth")]
+    if model_files:
+        MODEL_PATH = os.path.join(models_dir, sorted(model_files)[-1])  # Get most recent model
+        print(f"Using model: {MODEL_PATH}")
+    else:
+        MODEL_PATH = None
+        print("No model files found in models directory")
+else:
+    MODEL_PATH = None
+    print("Models directory not found or empty")
+
+VIDEO_PATH = "data/test/0IPAgFHyRVI.mp4"
+DETECTION_THRESHOLD = 0.4  # Fixed threshold as requested
+
 print(f"Using device: {DEVICE.upper()}")
 
-def calculate_collision_risk(boxes, velocities, track_ids):
-    """Calculate collision risk between objects"""
-    if len(boxes) < 2:
-        return 0.0
+def add_status_label(frame, is_accident, confidence=None):
+    """Add a simple status label to the frame"""
+    h, w = frame.shape[:2]
+    label = "ACCIDENT" if is_accident else "NON-ACCIDENT"
+    color = (0, 0, 255) if is_accident else (0, 255, 0)  # Red for accident, green otherwise
     
-    # Convert boxes to center points
-    centers = boxes[:, :2]
+    # Create semi-transparent background for text
+    overlay = frame.copy()
+    # Make background wider if showing confidence
+    bg_width = 350 if confidence is not None else 210
+    cv2.rectangle(overlay, (10, 10), (bg_width, 50), (0, 0, 0), -1)
+    alpha = 0.7
+    cv2.addWeighted(overlay, alpha, frame, 1-alpha, 0, frame)
     
-    # Calculate pairwise distances
-    distances = cdist(centers, centers)
+    # Add text
+    cv2.putText(frame, label, (20, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
     
-    # Calculate relative velocities
-    velocities = np.array(velocities)
-    relative_velocities = np.zeros((len(velocities), len(velocities), 2))
-    for i in range(len(velocities)):
-        for j in range(len(velocities)):
-            relative_velocities[i,j] = velocities[i] - velocities[j]
+    # Add confidence if provided
+    if confidence is not None:
+        conf_text = f"Conf: {confidence:.2%}"
+        cv2.putText(frame, conf_text, (220, 35), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
     
-    # Calculate collision risk
-    risk = 0.0
-    count = 0
-    for i in range(len(boxes)):
-        for j in range(i+1, len(boxes)):
-            # Only consider vehicles
-            if track_ids[i] in [2,3,5,7] and track_ids[j] in [2,3,5,7]:
-                # Calculate time to collision
-                rel_vel = np.linalg.norm(relative_velocities[i,j])
-                if rel_vel > 0:
-                    ttc = distances[i,j] / rel_vel
-                    if ttc < 2.0:  # Consider collision risk if TTC < 2 seconds
-                        risk += 1.0 / (ttc + 1e-6)
-                        count += 1
-    
-    return risk / (count + 1e-6)
+    return frame
 
-def visualize_attention(attention_weights, frame):
-    """Visualize attention weights on the frame"""
-    # Normalize attention weights
-    weights = attention_weights.squeeze().cpu().numpy()
-    weights = (weights - weights.min()) / (weights.max() - weights.min() + 1e-6)
-    
-    # Create attention heatmap
-    heatmap = np.zeros_like(frame)
-    for i, weight in enumerate(weights):
-        # Map attention weight to color (red = high attention)
-        color = np.array([0, 0, 255 * weight])  # BGR format
-        # Draw attention indicator
-        cv2.rectangle(heatmap, (10, 10 + i*20), (30, 30 + i*20), color, -1)
-        # Add weight value text
-        cv2.putText(heatmap, f"{weight:.2f}", (40, 25 + i*20), 
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-    
-    # Blend heatmap with original frame
-    alpha = 0.5
-    output = cv2.addWeighted(frame, 1-alpha, heatmap, alpha, 0)
-    return output
-
-def test_video(video_path, model, threshold=0.5):
-    """Test a single video with accident detection"""
-    # Initialize YOLO model for tracking
-    yolo_model = YOLO("yolo11m.pt").to(DEVICE)
-    
+def test_video(video_path, model):
+    """Test the accident detection model on a video"""
     # Initialize video capture
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
@@ -84,97 +61,127 @@ def test_video(video_path, model, threshold=0.5):
         return
     
     # Get video properties
-    fps = cap.get(cv2.CAP_PROP_FPS)
+    fps = int(cap.get(cv2.CAP_PROP_FPS))
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = total_frames / fps if fps > 0 else 0
     
-    # Initialize feature buffer
-    features_buffer = []
-    accident_detected = False
-    accident_vehicles = set()  # Track vehicles involved in accidents
+    print(f"Processing video: {video_path}")
+    print(f"Video info: {total_frames} frames, {fps} FPS, {duration:.2f} seconds")
+    print(f"Detection threshold: {DETECTION_THRESHOLD}")
+    print("-" * 50)
     
-    # Process video
+    # Initialize feature extractor
+    feature_extractor = YOLOFeatureExtractor()
+    
+    # Buffer to hold frame features
+    frame_buffer = []
+    
+    # Process the video
     frame_count = 0
+    skip_frames = 2  # Process every nth frame for efficiency
+    start_time = time.time()
+    
+    # To avoid repeating detections
+    last_detection_frame = -100
+    min_frames_between_detections = fps * 2  # About 2 seconds
+    
+    # Create window
+    cv2.namedWindow("Video", cv2.WINDOW_NORMAL)
+    
+    # Status tracking
+    accident_status = False
+    current_confidence = 0.0
+    
     while cap.isOpened():
         ret, frame = cap.read()
         if not ret:
             break
         
-        # Track objects and get features
-        results = yolo_model.track(frame, persist=True, verbose=False, device=DEVICE)
+        # Add status label to frame
+        display_frame = add_status_label(frame.copy(), accident_status, current_confidence)
         
-        # Get object data
-        boxes = results[0].boxes.xywhn.cpu().numpy()
-        track_ids = results[0].boxes.id.cpu().numpy() if results[0].boxes.id is not None else []
-        classes = results[0].boxes.cls.cpu().numpy()
+        # Display the frame
+        cv2.imshow("Video", display_frame)
         
-        # Calculate velocities and positions
-        velocities = []
-        for idx, (track_id, box) in enumerate(zip(track_ids, boxes)):
-            x, y = box[0], box[1]
-            velocities.append([x, y])  # Simplified velocity calculation
-        
-        # Calculate collision risk
-        collision_risk = calculate_collision_risk(boxes, velocities, classes)
-        
-        # Get scene features (placeholder)
-        scene_features = np.zeros(1024)
-        
-        # Create frame feature
-        frame_feature = {
-            "num_vehicles": np.sum(np.isin(classes, [2, 3, 5, 7])),
-            "num_peds": np.sum(classes == 0),
-            "motion": velocities,
-            "positions": boxes[:, :2].tolist(),
-            "sizes": boxes[:, 2:].tolist(),
-            "collision_risk": collision_risk,
-            "scene_features": scene_features.tolist()
-        }
-        
-        # Add to buffer
-        features_buffer.append(frame_feature)
-        
-        # Process sequence if buffer is full
-        if len(features_buffer) >= 16:  # Assuming sequence length of 16
-            # Prepare input for model
-            sequence = features_buffer[-16:]  # Get last 16 frames
-            
-            # Get model prediction
-            with torch.no_grad():
-                prediction, _ = model([sequence])
-                prediction = prediction.item()
-            
-            # Check for accident
-            if prediction > threshold and not accident_detected:
-                # Get vehicles involved in the current frame
-                current_vehicles = set(track_ids[np.isin(classes, [2, 3, 5, 7])])  # Vehicle classes
-                
-                # Check if these vehicles were already involved in an accident
-                if not current_vehicles.issubset(accident_vehicles):
-                    print(f"\n🚨 ACCIDENT DETECTED!")
-                    print(f"Confidence: {prediction:.2%}")
-                    print(f"Vehicles involved: {current_vehicles}")
-                    accident_vehicles.update(current_vehicles)
-                    accident_detected = True
-            
-            # Reset accident detection flag after some frames
-            if accident_detected and frame_count % (fps * 2) == 0:  # Reset every 2 seconds
-                accident_detected = False
-            
-            # Display original frame
-            cv2.imshow('Accident Detection', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        # Check for user exit
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
         
         frame_count += 1
+        if frame_count % skip_frames != 0:
+            continue
+        
+        # Extract features using the same pipeline as training
+        frame_tensor = feature_extractor.preprocess_frame(frame)
+        frame_features = feature_extractor.extract_frame_features(frame_tensor)
+        
+        # Add to buffer
+        frame_buffer.append(frame_features)
+        
+        # Ensure buffer doesn't exceed required length
+        if len(frame_buffer) > SEQ_LENGTH:
+            frame_buffer.pop(0)
+        
+        # Only make prediction when we have enough frames
+        if len(frame_buffer) == SEQ_LENGTH:
+            # Make prediction
+            with torch.no_grad():
+                prediction, _ = model([frame_buffer])
+                prediction_value = prediction.item()
+                current_confidence = prediction_value
+            
+            # Update accident status based on current prediction
+            if prediction_value > DETECTION_THRESHOLD:
+                # Print detection to terminal every time it's above threshold
+                timestamp = frame_count / fps
+                minutes = int(timestamp // 60)
+                seconds = int(timestamp % 60)
+                
+                if not accident_status:
+                    # First detection of an accident sequence
+                    print(f"ACCIDENT DETECTED at {minutes:02d}:{seconds:02d} (Frame {frame_count}) - Confidence: {prediction_value:.2%}")
+                else:
+                    # Continuing accident 
+                    print(f"ACCIDENT ONGOING at {minutes:02d}:{seconds:02d} (Frame {frame_count}) - Confidence: {prediction_value:.2%}")
+                
+                accident_status = True
+                last_detection_frame = frame_count
+            else:
+                # Change to non-accident status when prediction is below threshold
+                if accident_status:
+                    timestamp = frame_count / fps
+                    minutes = int(timestamp // 60)
+                    seconds = int(timestamp % 60)
+                    print(f"ACCIDENT ENDED at {minutes:02d}:{seconds:02d} (Frame {frame_count}) - Confidence: {prediction_value:.2%}")
+                
+                accident_status = False
+        
+        # Show progress periodically
+        if frame_count % (fps * 10) == 0:  # Every ~10 seconds
+            progress = (frame_count / total_frames) * 100 if total_frames > 0 else 0
+            elapsed = time.time() - start_time
+            print(f"Progress: {progress:.1f}% ({frame_count}/{total_frames} frames, {elapsed:.1f} seconds elapsed)")
     
+    # Release resources
     cap.release()
     cv2.destroyAllWindows()
+    
+    # Completion message
+    elapsed = time.time() - start_time
+    print("-" * 50)
+    print(f"Video processing complete in {elapsed:.2f} seconds")
+    print(f"Processed {frame_count} frames")
 
 if __name__ == "__main__":
-    # Load model
-    model = LSTM().to(DEVICE)
-    model.load_state_dict(torch.load(MODEL_PATH)['model_state_dict'])
-    model.eval()
-    
-    # Test video
-    video_path = Path(VIDEO_PATH)  # Replace with your test video path
-    test_video(video_path, model)
+    if MODEL_PATH:
+        # Load model
+        model = LSTM().to(DEVICE)
+        checkpoint = torch.load(MODEL_PATH, map_location=DEVICE)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.eval()
+        
+        # Test video
+        video_path = Path(VIDEO_PATH)
+        test_video(video_path, model)
+    else:
+        print("No model available. Train a model first using train.py")
